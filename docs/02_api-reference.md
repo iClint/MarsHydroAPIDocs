@@ -139,6 +139,34 @@ Response `data`: array of rows:
 ```
 (Values are strings; `addTime` is `MM-dd-yyyy HH:mm:ss`.)
 
+This endpoint is **average / device-wide only**. The soil columns (`tempSoil`/`humiSoil`/`ecSoil`)
+are the average across all probes; a `sensorId` here is **silently ignored**. For a single probe's
+history use `getDeviceTHPData_Industry` below.
+
+### `dr/getDeviceTHPData_Industry/v1` - per-probe (multi-soil) history  *(captured 2026-06-22)*
+The history call the app fires when you select a specific soil probe (rather than the average).
+Request:
+```json
+{ "type": "day", "deviceSerialnum": "<serial>",
+  "startDate": "YYYY-MM-DD HH:MM:SS", "endDate": "YYYY-MM-DD HH:MM:SS",
+  "sensorId": "<probe-hwid>" }
+```
+- `sensorId` is **required** and is the probe's hardware id - the same value as `senConfig.id` and
+  `getDevSta.sensors[].id`.
+
+Response `data`: **soil-only** rows (every air metric is `null`):
+```json
+{
+  "id": 205292, "deviceSerialnum": "AABBCCDDEEFF", "roomId": 10000,
+  "sensorId": "363035390F303F42", "sensorType": 0, "tempUnit": "0",
+  "temp": null, "humi": null, "vpd": null, "tempF": null, "co2": null, "ppfd": null,
+  "tempSoil": "21.1", "tempSoilF": "70.0", "humiSoil": "59.4", "ecSoil": "0.41",
+  "tempUnitSoil": "0", "addTime": "06-21-2026 14:00:00"
+}
+```
+(Values are strings; `ecSoil` is lowercase; same UTC window/`addTime` rules as `getDeviceTHPData`.
+The `Industry` suffix is just the vendor's name for the multi-sensor variant, not a product tier.)
+
 ### `mine/info/v1` - profile  *(probed 2026-06-13)*
 Request: empty body (`{}`). Response `data`: `userName, uuid, nickName, userHeadImg, timezone`.
 `timezone` here is a numeric id (e.g. `"34"`), not an IANA string; the IANA name comes from

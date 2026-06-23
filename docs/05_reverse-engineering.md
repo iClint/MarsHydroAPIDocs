@@ -62,7 +62,8 @@ body: { "email": "...", "password": "...", "loginMethod": "1" }
 ```
 
 `mqttPwd` is your **account UUID** — a stable value you'll reuse as the MQTT password. Other endpoints:
-`udm/getDeviceList/v1`, `udm/getDeviceDetail/v1`, `dr/getDeviceTHPData/v1` (history), `mine/info/v1`, etc.
+`udm/getDeviceList/v1`, `udm/getDeviceDetail/v1`, `dr/getDeviceTHPData/v1` (avg history),
+`dr/getDeviceTHPData_Industry/v1` (per-probe soil history, `sensorId`), `mine/info/v1`, etc.
 
 **Versioning gotcha:** paths are versioned **per endpoint** (`/vN`), but a live probe shows that only
 **`/v1` actually resolves** for the device endpoints — `v2…v20` return `105 "no.method"`. A `/v18` that
