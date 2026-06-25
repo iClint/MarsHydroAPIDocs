@@ -380,8 +380,11 @@ def find_device():
             return
     print("no device found")
 
-def _request(method, params, qos=0):
-    """Subscribe UP, publish one command to DOWN, return the first reply. TLS on, no verify."""
+def _request(method, params, qos=0, timeout=8):
+    """Subscribe UP, publish one command to DOWN, return the MATCHING reply. TLS on, no verify.
+    The device also pushes unsolicited getDevSta frames on UP, so wait for the frame whose
+    method == the one we asked for - grabbing the first frame would intermittently return a
+    getDevSta push instead of, say, the getConfigFile reply. Times out instead of hanging."""
     s = _state()
     up   = f"MHPRO/{s['model']}/API/UP/{s['serial']}"     # topics are UPPERCASE
     down = f"MHPRO/{s['model']}/API/DOWN/{s['serial']}"
@@ -392,8 +395,17 @@ def _request(method, params, qos=0):
     box = {}
     c.on_connect = lambda cl, *_: (cl.subscribe(up, 0),
         cl.publish(down, json.dumps({"method": method, "params": params}), qos=qos))
-    c.on_message = lambda cl, _u, m: (box.setdefault("r", json.loads(m.payload)), cl.disconnect())
-    c.connect(MQTT, 8883, 30); c.loop_forever()
+    def _on_message(cl, _u, m):
+        r = json.loads(m.payload)
+        if r.get("method") == method:                    # ignore unsolicited pushes
+            box["r"] = r; cl.disconnect()
+    c.on_message = _on_message
+    c.connect(MQTT, 8883, 30)
+    c.loop_start()
+    deadline = time.time() + timeout
+    while "r" not in box and time.time() < deadline:
+        time.sleep(0.05)
+    c.loop_stop(); c.disconnect()
     return box.get("r")
 
 def read():
