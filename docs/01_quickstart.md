@@ -186,57 +186,56 @@ line per value (`-C` forces color through a pipe). One line per device:
 
 This writes - heed the warning at the top. There is no "set one field" call: you **read the actuator's
 full config, change the field(s) you want, and send the whole object back**. Skip a field and the device
-treats it as "unset". The example below moves the blower's `maxSpeed`/`minSpeed` and leaves everything
-else (schedule, cycle timers, mode) exactly as it was.
+treats it as "unset". So don't hand-craft the message - dump the live config to a file, edit that file,
+and send it back. Three steps:
 
-The read is the fiddly part. MQTT has no request/response - you publish a question on `DOWN` and the
-answer arrives later on `UP` - so you must already be **subscribed before you ask**. The subshell does
-exactly that: start the subscriber in the background, wait a beat so it's connected, publish the
-request, then `wait` for the subscriber to catch the reply and exit. Each line is annotated below.
-
+**Step 1 - Read and save.** Fetch the live config and write two files: `config.backup.json` (the whole
+config, your safety net) and `blower.json` (just the actuator you're editing). MQTT has no
+request/response, so you must be **subscribed on `UP` before you publish the question on `DOWN`** - the
+subshell starts the subscriber in the background, waits a beat, asks, then `wait`s for the reply:
 ```bash
 source ./mars.env
-
-# ── 1. READ ─────────────────────────────────────────────────────────────────
-# Capture the device's reply into $CFG. The (...) subshell is one request/response:
 CFG=$(
-  # a) subscribe to the UP (reply) topic FIRST, in the background (&).
-  #    -W 4 = self-destruct after 4s so this can't hang forever.
   mosquitto_sub -h "$MQTT_HOST" -p 8883 -V mqttv311 --cafile broker-ca.pem --insecure \
     -i "mars-sub-$$" -u "$MQTT_USER" -P "$MQTT_PWD" \
     -t "MHPRO/$MODEL/API/UP/$SERIAL" -W 4 &
-  sleep 1                          # b) give the subscriber a second to connect
-  # c) NOW publish the question on the DOWN topic (>/dev/null hides its noise)
+  sleep 1
   mosquitto_pub -h "$MQTT_HOST" -p 8883 -V mqttv311 --cafile broker-ca.pem --insecure \
     -i "mars-pub-$$" -u "$MQTT_USER" -P "$MQTT_PWD" \
     -t "MHPRO/$MODEL/API/DOWN/$SERIAL" \
     -m "{\"method\":\"getConfigFile\",\"params\":{\"pid\":\"$SERIAL\"}}" >/dev/null
-  wait                             # d) block until the subscriber prints the reply + exits
+  wait
 )
+# select() matters: the device also pushes unsolicited getDevSta frames on UP,
+# so pick the getConfigFile reply, not whatever frame arrived first.
+echo "$CFG" | jq 'select(.method=="getConfigFile") | .data.configFile'              > config.backup.json
+echo "$CFG" | jq 'select(.method=="getConfigFile") | .data.configFile.device.blower' > blower.json
+echo "wrote config.backup.json (full backup) and blower.json (edit this one)"
+```
+You'll see `Timed out` - that's just the `-W 4` subscriber closing after it got the reply, not an error.
 
-# Pull out just the blower object. The select() matters: the device also pushes
-# unsolicited getDevSta frames on UP, so filter for the getConfigFile reply, not
-# whatever frame happened to arrive first.
-BLOWER=$(echo "$CFG" | jq -c 'select(.method=="getConfigFile") | .data.configFile.device.blower')
-echo "backup: $BLOWER"            # SAVE this - it's your undo (republish to revert)
+**Step 2 - Edit the file.** Open `blower.json` and change the value(s) you want, e.g. `maxSpeed`/
+`minSpeed`. Leave every other field alone - the whole object gets sent back:
+```bash
+nano blower.json        # or any editor
+```
 
-# ── 2. MODIFY + WRITE ───────────────────────────────────────────────────────
-# Merge the change into the full blower object ($blower + {…} overrides only those
-# keys) and publish setConfigField at QoS 1 (-q 1) so we get a PUBACK.
+**Step 3 - Write it back.** Read the edited `blower.json` and publish it as `setConfigField` at QoS 1
+(`-q 1`, so you get a PUBACK). `--slurpfile` loads the file; `$blower[0]` is the object you edited:
+```bash
+source ./mars.env
 mosquitto_pub -h "$MQTT_HOST" -p 8883 -V mqttv311 --cafile broker-ca.pem --insecure \
   -i "mars-pub-$$" -u "$MQTT_USER" -P "$MQTT_PWD" -q 1 \
   -t "MHPRO/$MODEL/API/DOWN/$SERIAL" \
-  -m "$(jq -nc --arg pid "$SERIAL" --argjson blower "$BLOWER" \
-        '{method:"setConfigField",params:{pid:$pid,keyPath:["device","blower"],
-          blower:($blower + {maxSpeed:60,minSpeed:35})}}')"
+  -m "$(jq -nc --arg pid "$SERIAL" --slurpfile blower blower.json \
+        '{method:"setConfigField",params:{pid:$pid,keyPath:["device","blower"],blower:$blower[0]}}')"
 ```
-**What you'll see:** the read prints `Timed out` (that's just the `-W 4` subscriber closing - normal) and
-a `backup: {…}` line; the write prints **nothing**, which means success - `mosquitto_pub` is silent
-unless it errors. To confirm the change landed, re-run the READ block and inspect `$BLOWER`.
+A successful write prints **nothing** (`mosquitto_pub` is silent unless it errors). To confirm it landed,
+re-run Step 1 and look at the new `blower.json`.
 
-Swap `blower` (in both the `jq` extract and the `keyPath`) for `light`/`fan`/`humidifier`/etc. to edit a
-different actuator. The PUBACK (QoS 1) is your delivery confirmation; there are no per-request ids. A bad
-write can wedge a slider, so keep that `backup:` line until you've confirmed the new value.
+To edit a different actuator, swap `blower` for `light`/`fan`/`humidifier`/etc. in **both** the Step 1 `jq`
+path and the Step 3 `keyPath`/filename. If a write wedges a slider, send `config.backup.json`'s actuator
+object back the same way to revert.
 
 <!-- §6–§8 below are duplicated verbatim in Track B §5–§7. Edit both copies together. -->
 ## 6. Config: getConfigFile → data.configFile
