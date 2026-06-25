@@ -133,12 +133,16 @@ Append serial + model (`<model>` is `productType` minus the `MH-` prefix):
 
 ## 3. Get the broker cert
 
-The broker cert is self-signed and the `mosquitto` CLI can't fully skip verification, so fetch it once
-(public cert, no private key - the broker shows it to every client, and it can rotate):
+The broker cert is self-signed and the `mosquitto` CLI can't fully skip verification (`--insecure` only
+skips hostname checks, not chain validation), so fetch the CA once (public cert, no private key - the
+broker shows its chain to every client, and it can rotate). The broker presents two certs: the leaf
+server cert first, then the self-signed CA. You need the **CA**, so grab the second cert onward -
+`openssl x509` alone would only keep the first (leaf) cert and verification would fail with a misleading
+`Error: Protocol error`:
 ```bash
 cd ~/mars
 openssl s_client -connect mars-pro.mqtt.lgledsolutions.com:8883 -showcerts </dev/null 2>/dev/null \
-  | openssl x509 -outform PEM > broker-ca.pem
+  | awk '/-----BEGIN CERTIFICATE-----/{c++} c>=2{print}' > broker-ca.pem
 ```
 
 ## 4. Live read: getDevSta (read-only)
