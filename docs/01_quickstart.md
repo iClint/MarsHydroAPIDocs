@@ -184,15 +184,39 @@ line per value (`-C` forces color through a pipe). One line per device:
 
 ## 5. Control: setConfigField (writes)
 
-This writes - heed the warning at the top. Read-modify-write: fetch the actuator's config (swap
-`getDevSta` → `getConfigFile` above), change field(s), publish the whole object back at QoS 1 (`-q 1`):
-```jsonc
-{ "method":"setConfigField",
-  "params":{ "pid":"<serial>", "keyPath":["device","blower"],
-             "blower":{ /* full config with your change */ "maxSpeed":60, "minSpeed":35 } } }
+This writes - heed the warning at the top. It's read-modify-write: fetch the actuator's **full** config,
+change the field(s) you want, and publish the **whole object** back at QoS 1 (`-q 1`). The one-shot
+command below moves the blower's `maxSpeed`/`minSpeed` while preserving every other field. Note the
+`select(.method=="getConfigFile")` filter - the device pushes unsolicited `getDevSta` frames on `UP`, so
+`-C 1` alone can grab the wrong reply:
+```bash
+source ./mars.env
+# 1. READ: fetch the current config, keep the actuator object you're editing
+CFG=$(
+  mosquitto_sub -h "$MQTT_HOST" -p 8883 -V mqttv311 --cafile broker-ca.pem --insecure \
+    -i "mars-sub-$$" -u "$MQTT_USER" -P "$MQTT_PWD" \
+    -t "MHPRO/$MODEL/API/UP/$SERIAL" -W 4 &
+  sleep 1
+  mosquitto_pub -h "$MQTT_HOST" -p 8883 -V mqttv311 --cafile broker-ca.pem --insecure \
+    -i "mars-pub-$$" -u "$MQTT_USER" -P "$MQTT_PWD" \
+    -t "MHPRO/$MODEL/API/DOWN/$SERIAL" \
+    -m "{\"method\":\"getConfigFile\",\"params\":{\"pid\":\"$SERIAL\"}}" >/dev/null
+  wait
+)
+BLOWER=$(echo "$CFG" | jq -c 'select(.method=="getConfigFile") | .data.configFile.device.blower')
+echo "backup: $BLOWER"   # SAVE this line - republish it to undo a bad write
+
+# 2. MODIFY + WRITE: merge your change into the full object, publish at QoS 1
+mosquitto_pub -h "$MQTT_HOST" -p 8883 -V mqttv311 --cafile broker-ca.pem --insecure \
+  -i "mars-pub-$$" -u "$MQTT_USER" -P "$MQTT_PWD" -q 1 \
+  -t "MHPRO/$MODEL/API/DOWN/$SERIAL" \
+  -m "$(jq -nc --arg pid "$SERIAL" --argjson blower "$BLOWER" \
+        '{method:"setConfigField",params:{pid:$pid,keyPath:["device","blower"],
+          blower:($blower + {maxSpeed:60,minSpeed:35})}}')"
 ```
-The PUBACK (QoS 1) is your delivery confirmation; there are no per-request ids. Back up the config
-first (re-fetch and save): a bad write can wedge a slider.
+Swap `blower` (in both the `jq` extract and the `keyPath`) for `light`/`fan`/`humidifier`/etc. to edit a
+different actuator. The PUBACK (QoS 1) is your delivery confirmation; there are no per-request ids. The
+`echo "backup: …"` line is your undo - keep it before writing, because a bad write can wedge a slider.
 
 <!-- §6–§8 below are duplicated verbatim in Track B §5–§7. Edit both copies together. -->
 ## 6. Config: getConfigFile → data.configFile
